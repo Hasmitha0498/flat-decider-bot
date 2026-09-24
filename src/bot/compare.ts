@@ -5,7 +5,7 @@ import { SHORTLIST_SIZE, geminiModel, isGeminiConfigured } from '../config';
 import * as repo from '../db/repo';
 import { GeminiError } from '../gemini/client';
 import { explainTradeoffs } from '../gemini/explainTradeoffs';
-import { extractListingFacts, type CustomCheck } from '../gemini/extractListing';
+import { extractListingFacts, type CustomCheck, type ExtractionResult, type ListingSource } from '../gemini/extractListing';
 import { fetchListingText } from '../listings/fetchPage';
 import { buildShortlist, type ListingEvaluation, type ListingInput, type MemberInput } from '../matching/rank';
 import type { AdditionalWish, CustomAnswers, Listing, ListingFacts, Member } from '../types';
@@ -13,8 +13,10 @@ import type { Ctx } from './context';
 import { DIVIDER, FINAL_MESSAGE, formatHeader, formatOption, joinNames } from './format';
 import { editMessage, escapeHtml, sendMessage, type Keyboard } from './telegram';
 
-const EXTRACTION_VERSION = 1; // bump to force re-extraction after prompt/schema changes
-const CONCURRENCY = 4;
+const EXTRACTION_VERSION = 3; // bump to force re-extraction after prompt/schema changes
+const FETCH_CONCURRENCY = 4; // reading web pages in parallel is fine
+const BATCH_SIZE = 5; // listings per Gemini call (the free tier allows ~5 calls per minute)
+const BATCH_MAX_CHARS = 40_000;
 
 export interface UnreadableListing {
   listingId: string;
@@ -53,39 +55,76 @@ function hashInput(listing: Listing, checks: CustomCheck[]): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-/** Reuse cached facts when nothing changed; otherwise read the listing and ask Gemini. Never throws. */
-async function extractOne(listing: Listing, checks: CustomCheck[], cached?: repo.StoredExtraction): Promise<Extracted> {
+interface PendingExtraction {
+  listing: Listing;
+  inputHash: string;
+  source: 'url' | 'manual';
+  text: string;
+}
+
+/** Step 1 (no AI): reuse cached facts, or get the text to extract from. Never throws. */
+async function prepareListing(listing: Listing, checks: CustomCheck[], cached?: repo.StoredExtraction): Promise<Extracted | PendingExtraction> {
   const inputHash = hashInput(listing, checks);
   if (cached && cached.input_hash === inputHash) return { ok: true, facts: cached.facts, customAnswers: cached.custom_checks };
 
-  try {
-    // Manually pasted text wins: the member copied it deliberately, often because the page couldn't be read.
-    let sourceText = listing.manual_text;
-    const source: 'url' | 'manual' = sourceText ? 'manual' : 'url';
-    if (!sourceText) {
-      const page = await fetchListingText(listing.url);
-      if (!page.ok) {
-        await repo.setListingStatus(listing.id, 'unreadable', page.reason);
-        return { ok: false, reason: page.reason, temporary: false };
-      }
-      sourceText = page.text;
-    }
+  // Manually pasted text wins: the member copied it deliberately, often because the page couldn't be read.
+  if (listing.manual_text) return { listing, inputHash, source: 'manual', text: listing.manual_text };
 
-    const result = await extractListingFacts(sourceText, checks);
-    if (!result.ok) {
-      await repo.setListingStatus(listing.id, 'unreadable', result.reason);
-      return { ok: false, reason: result.reason, temporary: false };
-    }
-
-    await repo.saveExtraction({ listing_id: listing.id, input_hash: inputHash, source, facts: result.facts, custom_checks: result.customAnswers, model: geminiModel() });
-    await repo.setListingStatus(listing.id, 'extracted', null);
-    return result;
-  } catch (error) {
-    console.error(`Extraction failed for listing ${listing.id}:`, error);
-    const reason = error instanceof GeminiError ? 'the AI service could not process it right now' : 'an unexpected error happened';
-    await repo.setListingStatus(listing.id, 'failed', reason).catch(() => undefined);
-    return { ok: false, reason, temporary: true };
+  const page = await fetchListingText(listing.url);
+  if (!page.ok) {
+    await repo.setListingStatus(listing.id, 'unreadable', page.reason).catch(() => undefined);
+    return { ok: false, reason: page.reason, temporary: false };
   }
+  return { listing, inputHash, source: 'url', text: page.text };
+}
+
+/** Groups listings so each Gemini call stays small. */
+function toBatches(pending: PendingExtraction[]): PendingExtraction[][] {
+  const batches: PendingExtraction[][] = [];
+  let current: PendingExtraction[] = [];
+  let chars = 0;
+  for (const item of pending) {
+    if (current.length && (current.length >= BATCH_SIZE || chars + item.text.length > BATCH_MAX_CHARS)) {
+      batches.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(item);
+    chars += item.text.length;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+/** Step 2: one Gemini call per batch. A failed batch never stops the other batches. */
+async function extractBatch(batch: PendingExtraction[], checks: CustomCheck[]): Promise<Extracted[]> {
+  let results: Map<string, ExtractionResult>;
+  try {
+    const sources: ListingSource[] = batch.map((p) => ({ id: p.listing.id, text: p.text }));
+    results = await extractListingFacts(sources, checks);
+  } catch (error) {
+    console.error(`Extraction failed for ${batch.length} listing(s):`, error);
+    const reason = error instanceof GeminiError ? 'the AI service could not process it right now' : 'an unexpected error happened';
+    await Promise.all(batch.map((p) => repo.setListingStatus(p.listing.id, 'failed', reason).catch(() => undefined)));
+    return batch.map(() => ({ ok: false, reason, temporary: true }));
+  }
+
+  return Promise.all(
+    batch.map(async (p): Promise<Extracted> => {
+      const result = results.get(p.listing.id)!;
+      try {
+        if (!result.ok) {
+          await repo.setListingStatus(p.listing.id, 'unreadable', result.reason);
+          return { ok: false, reason: result.reason, temporary: false };
+        }
+        await repo.saveExtraction({ listing_id: p.listing.id, input_hash: p.inputHash, source: p.source, facts: result.facts, custom_checks: result.customAnswers, model: geminiModel() });
+        await repo.setListingStatus(p.listing.id, 'extracted', null);
+      } catch (error) {
+        console.error(`Could not store extraction for ${p.listing.id}:`, error); // still usable for this run
+      }
+      return result.ok ? result : { ok: false, reason: result.reason, temporary: false };
+    }),
+  );
 }
 
 /** Returns a list of human-readable blockers, or [] if /compare can run. */
@@ -122,19 +161,20 @@ export async function runCompare(ctx: Ctx, member: Member): Promise<void> {
   await sendMessage(ctx.chatId, `Comparing ${listings.length} ${listings.length === 1 ? 'flat' : 'flats'} against ${members.length} ${members.length === 1 ? "person's" : "people's"} requirements...`);
   const progressId = await sendMessage(ctx.chatId, `Checking ${listings.length} listings...`);
 
-  // 4-5. Extraction (cached, parallel, one failure never stops the rest).
+  // 4-5. Extraction: cached facts are reused; the rest is read, then sent to Gemini in small batches, one call at a time.
   const cache = await repo.getExtractions(listings.map((l) => l.id));
-  let done = 0;
-  let lastEdit = Date.now();
-  const extracted = await mapWithConcurrency(listings, CONCURRENCY, async (listing) => {
-    const result = await extractOne(listing, checks, cache.get(listing.id));
-    done++;
-    if (Date.now() - lastEdit > 2000 && done < listings.length) {
-      lastEdit = Date.now();
-      await editMessage(ctx.chatId, progressId, `Checking ${listings.length} listings... ${done} done`);
-    }
-    return result;
-  });
+  const prepared = await mapWithConcurrency(listings, FETCH_CONCURRENCY, (listing) => prepareListing(listing, checks, cache.get(listing.id)));
+  const extracted: Extracted[] = prepared.map((p) => ('listing' in p ? { ok: false, reason: 'not processed', temporary: true } : p));
+  const pending = prepared.filter((p): p is PendingExtraction => 'listing' in p);
+
+  let done = listings.length - pending.length;
+  if (pending.length) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} listings... ${done} done`);
+  for (const batch of toBatches(pending)) {
+    const results = await extractBatch(batch, checks);
+    batch.forEach((p, i) => (extracted[listings.indexOf(p.listing)] = results[i]));
+    done += batch.length;
+    if (done < listings.length) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} listings... ${done} done`);
+  }
   await editMessage(ctx.chatId, progressId, `Checked ${listings.length} listings.`);
 
   const nameById = new Map(members.map((m) => [m.id, m.display_name]));

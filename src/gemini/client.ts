@@ -2,7 +2,7 @@
 // schema-validated JSON. We never parse free-form prose from the model.
 import { GoogleGenAI } from '@google/genai';
 import type { z } from 'zod';
-import { geminiFallbackModel, geminiModel, requireEnv } from '../config';
+import { geminiFallbackModels, geminiModel, requireEnv } from '../config';
 
 let ai: GoogleGenAI | null = null;
 
@@ -20,24 +20,36 @@ interface JsonRequest<T> {
   validator: z.ZodType<T>; // checked again on our side before anything is stored
 }
 
-// Attempt plan: main model, main model again after a pause, then the fallback model.
-// Pauses help with Gemini's short "high demand" (503) / rate-limit (429) spikes.
-const ATTEMPTS = [
-  { delayMs: 0, fallback: false },
-  { delayMs: 2000, fallback: false },
-  { delayMs: 4000, fallback: true },
-];
+// Attempt plan: the main model, the main model again after a pause, then each fallback model once.
+// Pauses help with Gemini's short "high demand" (503) spikes; on rate limits (429) a retry of the same
+// model waits as long as Gemini asks (capped), because the free tier allows only a few requests per minute.
+// Fallback models have their own capacity and quota, so they are tried without waiting for the rate limit.
+function attemptPlan(): { model: string; delayMs: number; sameModelRetry: boolean }[] {
+  return [
+    { model: geminiModel(), delayMs: 0, sameModelRetry: false },
+    { model: geminiModel(), delayMs: 2000, sameModelRetry: true },
+    ...geminiFallbackModels().map((model) => ({ model, delayMs: 1000, sameModelRetry: false })),
+  ];
+}
+const MAX_RATE_LIMIT_WAIT_MS = 35_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Calls Gemini, retrying on API errors or invalid output (see ATTEMPTS), then gives up with GeminiError. */
+/** Gemini's 429 errors say e.g. "Please retry in 17.7s". */
+export function suggestedRetryMs(error: unknown): number | null {
+  const match = String(error instanceof Error ? error.message : error).match(/retry in ([\d.]+)s/i);
+  return match ? Math.min(Math.ceil(Number(match[1]) * 1000) + 500, MAX_RATE_LIMIT_WAIT_MS) : null;
+}
+
+/** Calls Gemini, retrying on API errors or invalid output (see attemptPlan), then gives up with GeminiError. */
 export async function generateJson<T>(request: JsonRequest<T>): Promise<T> {
   let lastError: unknown;
-  for (const attempt of ATTEMPTS) {
-    if (attempt.delayMs) await sleep(attempt.delayMs);
+  for (const attempt of attemptPlan()) {
+    const rateLimitWait = attempt.sameModelRetry && lastError ? suggestedRetryMs(lastError) ?? 0 : 0;
+    if (attempt.delayMs) await sleep(Math.max(attempt.delayMs, rateLimitWait));
     try {
       const response = await client().models.generateContent({
-        model: attempt.fallback ? geminiFallbackModel() : geminiModel(),
+        model: attempt.model,
         contents: request.prompt,
         config: {
           systemInstruction: request.system,

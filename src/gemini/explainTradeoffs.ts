@@ -28,7 +28,8 @@ You are given the final, already-decided evaluation. Do not re-rank, re-score or
 Use only the facts provided. Do not invent amenities, distances or opinions.
 2 sentences max per option, friendly and plain. Mention who it works well for and what the main compromise or open question is.
 If the status is hard_conflict, clearly say which hard requirement it breaks.
-Never say a flat is "the best" or tell the group what to choose.`;
+Never say a flat is "the best" or tell the group what to choose.
+Refer to people by their names; do not use gendered pronouns.`;
 
 /** Compact, name-and-outcome-only summary sent to Gemini (no URLs, no raw listing text). */
 export function summarizeForExplanation(options: ListingEvaluation[]) {
@@ -39,7 +40,9 @@ export function summarizeForExplanation(options: ListingEvaluation[]) {
       name: m.name,
       preference_match_percent: m.prefPercent,
       matched: m.results.filter((r) => r.state === 'match' && r.importance !== 'no_preference').map((r) => r.label),
-      failed_preferences: m.results.filter((r) => r.state === 'fail' && r.importance === 'prefer').map((r) => r.label),
+      failed_preferences: m.results
+        .filter((r) => r.state === 'fail' && r.importance === 'prefer')
+        .map((r) => `${CRITERION_NAMES[r.criterion]}: wanted ${r.wanted}, listing: ${r.label}`),
       broken_hard_requirements: m.hardFails.map((r) => `${CRITERION_NAMES[r.criterion]}: wanted ${r.wanted}, listing: ${r.label}`),
       needs_verification: m.results.filter((r) => r.state === 'unknown').map((r) => CRITERION_NAMES[r.criterion]),
     })),

@@ -1,16 +1,15 @@
 // Entry point for every Telegram update (webhook on Vercel, or long polling locally).
 // Routes commands, free text and button presses. Errors are caught here so the bot never crashes.
-import { isDemoMode } from '../config';
 import * as repo from '../db/repo';
 import { DatabaseError } from '../db/supabase';
-import { seedDemo } from '../demo/seedDemo';
+import { startDemo } from '../demo/demoCommand';
 import { runCompare } from './compare';
 import type { Ctx } from './context';
 import { formatProfile } from './format';
 import * as group from './groupCommands';
 import * as listings from './listingCommands';
 import * as onboarding from './onboarding';
-import { answerCallback, escapeHtml, sendMessage, TelegramError, type TelegramMessage, type TelegramUpdate, type TelegramUser } from './telegram';
+import { answerCallback, sendMessage, TelegramError, type TelegramMessage, type TelegramUpdate, type TelegramUser } from './telegram';
 
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
@@ -172,22 +171,4 @@ async function handleCallback(query: NonNullable<TelegramUpdate['callback_query'
   } finally {
     await answerCallback(query.id, notice);
   }
-}
-
-// ---------- demo ----------
-
-async function startDemo(ctx: Ctx): Promise<void> {
-  if (!isDemoMode()) {
-    await sendMessage(ctx.chatId, 'Demo mode is turned off.');
-    return;
-  }
-  if (ctx.member) {
-    await sendMessage(ctx.chatId, "You're already in a house search. Send /leave first, then /demo.");
-    return;
-  }
-  const demo = await seedDemo(ctx.user.id, ctx.user.username ?? null);
-  await sendMessage(
-    ctx.chatId,
-    `🎬 <b>Demo created:</b> ${escapeHtml(demo.name)}\n\nYou are playing <b>Riya</b>. Meera and Kavita have finished their preferences, and the group has added 9 flats (one of them unreadable on purpose).\n\nTry:\n/status\n/preferences\n/compare\n\nWhen finished, send /leave.`,
-  );
 }

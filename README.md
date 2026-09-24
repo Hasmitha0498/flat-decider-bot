@@ -49,7 +49,7 @@ src/
   listings/                 URL validation/normalisation and safe page fetching
   db/                       Supabase client + every query (repo.ts)
   bot/                      Telegram UX only: router, questionnaire, commands, message formatting
-  demo/                     Demo data + seeder (isolated; not used by production logic)
+  demo/                     Demo data, seeder and the /demo command (isolated; not used by production logic)
 scripts/                    Local polling, webhook setup, demo seeding
 supabase/                   SQL migration + optional scripts
 tests/                      Matching, extraction safety, formatting, full conversation flow
@@ -103,8 +103,9 @@ The code uses `SUPABASE_SERVICE_ROLE_KEY` if it is set and falls back to `SUPABA
 | `SUPABASE_SERVICE_ROLE_KEY` | recommended | Server-only key; bypasses RLS |
 | `TELEGRAM_WEBHOOK_SECRET` | recommended | Random string; Telegram sends it with every webhook call so fake requests are rejected |
 | `GEMINI_MODEL` | no | Override the Gemini model |
-| `GEMINI_FALLBACK_MODEL` | no | Model for the last retry when the main one is overloaded (default `gemini-3.5-flash`) |
+| `GEMINI_FALLBACK_MODELS` | no | Comma-separated models tried in order when the main one is overloaded or rate-limited (default `gemini-3.5-flash,gemini-3.1-flash-lite`) |
 | `DEMO_MODE` | no | `true` enables the `/demo` command |
+| `DEBUG_EXTRACTION` | no | `true` logs (server-side only) each fact that was dropped for lacking a real quote |
 
 \* Either the anon key or the service role key must be set.
 
@@ -220,7 +221,7 @@ Weighting the worst-off person stops one friend from being sacrificed for the ot
 B ranks above A. The formula lives in code (`src/matching/rank.ts`). Gemini only writes the "Main tradeoff" sentences and never sees or changes the scoring.
 
 ### Gemini's three jobs (and nothing else)
-1. **Extract listing facts** into a fixed JSON schema (validated with zod). Failed calls or invalid output are retried: once more after 2 s, then once on the fallback model after 4 s. If all fail, the listing is marked failed and nothing is invented.
+1. **Extract listing facts** into a fixed JSON schema (validated with zod). Up to 5 listings go in one call, because the free Gemini tier allows only about 5 requests per minute. Calls are sent one at a time. Failed calls or invalid output are retried: the main model again (waiting as long as Gemini asks on rate limits), then each fallback model. If all fail, those listings are reported as "not processed, try again later" and nothing is invented. A lighter fallback model may leave more facts unknown, but the evidence check means it can't add wrong ones.
 2. **Normalise free-text requirements** into yes/no checks.
 3. **Explain** the finished, already-ranked result in plain language. If this fails, a deterministic sentence is used.
 
@@ -276,4 +277,5 @@ npm run typecheck
 - Area matching is text-based. "Baner" matches "Baner Road", but nearby localities are not treated as the same.
 - Many portals (NoBroker, MagicBricks, 99acres) render with JavaScript or block bots, so pasting details manually will often be needed.
 - Rent is split equally. Unequal room splits aren't modelled.
+- On the free Gemini tier, a `/compare` with ~15 new flats takes about 1–2 minutes (batched calls plus rate-limit waits). Unchanged flats are cached and not re-read.
 - Updates from the same person are processed independently. Tapping buttons extremely fast could, in rare cases, interleave.

@@ -26,9 +26,9 @@ vi.mock('../src/gemini/client', () => ({
     throw new Error('offline'); // explanations fall back to the deterministic template
   }),
 }));
-vi.mock('../src/gemini/extractListing', () => ({
+vi.mock('../src/gemini/extractListing', () => {
   // Reads "rent=63000 lift=yes" style test descriptions. Missing keys stay null (unknown).
-  extractListingFacts: vi.fn(async (text: string) => {
+  const extractOne = (text: string) => {
     const get = (key: string) => text.match(new RegExp(`${key}=(\\S+)`))?.[1] ?? null;
     const bool = (key: string) => (get(key) === null ? null : get(key) === 'yes');
     const num = (key: string) => (get(key) === null ? null : Number(get(key)));
@@ -42,8 +42,11 @@ vi.mock('../src/gemini/extractListing', () => ({
         balcony: bool('balcony'), gated_community: null, metro_nearby: null, source_confidence: {},
       },
     };
-  }),
-}));
+  };
+  return {
+    extractListingFacts: vi.fn(async (listings: { id: string; text: string }[]) => new Map(listings.map((l) => [l.id, extractOne(l.text)]))),
+  };
+});
 vi.mock('../src/listings/fetchPage', () => ({
   fetchListingText: vi.fn(async () => ({ ok: false, reason: 'the site requires a login or blocks automated access' })),
 }));
