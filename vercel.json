@@ -6,8 +6,8 @@
   },
   "rewrites": [
     {
-      "source": "/",
-      "destination": "/api/telegram"
+      "source": "/health",
+      "destination": "/api/health"
     }
   ]
 }

@@ -34,6 +34,8 @@ Telegram shortlist
 
 ```text
 api/telegram.ts             Vercel webhook: verifies secret, answers 200 at once, processes in background
+api/health.ts               /health: shows which required settings are present (never their values)
+public/index.html           Landing page served at / (static, no build step)
 src/
   types.ts                  Domain types (criteria, importance, match states, listing facts)
   config.ts                 Env vars and limits
@@ -126,7 +128,10 @@ Now message your bot in Telegram. `npm run dev` removes any webhook, so run `npm
 1. Push this folder to GitHub.
 2. On <https://vercel.com> → **Add New → Project** → import the repository. No build settings are needed; Vercel detects `api/telegram.ts` automatically.
 3. In **Settings → Environment Variables**, add the same variables as in `.env`.
-4. Deploy. `https://<your-app>.vercel.app/api/telegram` should reply "Flat Decider bot is running." when opened in a browser.
+4. Deploy. Open these to check:
+   - `https://<your-app>.vercel.app/` shows the landing page (`public/index.html`), with an **Open in Telegram** button.
+   - `https://<your-app>.vercel.app/health` shows ✓ or ✗ for each required setting. It never shows values.
+   - `https://<your-app>.vercel.app/api/telegram` is the webhook Telegram posts to.
 
 `vercel.json` allows the function to run for up to 300 s, because `/compare` may read many listings. The webhook answers Telegram immediately and finishes the work in the background (`waitUntil`).
 
