@@ -6,7 +6,9 @@ export type PageResult = { ok: true; text: string } | { ok: false; reason: strin
 
 const TIMEOUT_MS = 8000;
 const MAX_BYTES = 2_000_000;
-const MAX_TEXT_CHARS = 15_000;
+// Listing facts sit near the top of a page; the rest is usually other listings and footers. Longer input
+// also made lighter Gemini models run past their deadline (15k chars: no answer in 2 min; 8k: ~4s).
+const MAX_TEXT_CHARS = 8_000;
 const MIN_USEFUL_CHARS = 300;
 
 export async function fetchListingText(rawUrl: string): Promise<PageResult> {

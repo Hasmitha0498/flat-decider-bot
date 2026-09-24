@@ -16,8 +16,10 @@ export function requireEnv(name: string): string {
 }
 
 export const isGeminiConfigured = () => Boolean(env('GEMINI_API_KEY'));
-export const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-3.8-flash';
+// Default to flash-lite: on the free tier the Flash models allow only ~20 requests/day each, while
+// flash-lite has a larger allowance, is fast, and extracts listing facts reliably (see README).
+export const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-3.1-flash-lite';
 /** Tried in order when the main model is overloaded or rate-limited. Comma-separated in the env var. */
 export const geminiFallbackModels = () =>
-  (env('GEMINI_FALLBACK_MODELS') ?? 'gemini-3.5-flash,gemini-3.1-flash-lite').split(',').map((m) => m.trim()).filter(Boolean);
+  (env('GEMINI_FALLBACK_MODELS') ?? 'gemini-3.1-flash-lite,gemini-3.8-flash,gemini-3.5-flash').split(',').map((m) => m.trim()).filter(Boolean);
 export const isDemoMode = () => env('DEMO_MODE') === 'true';

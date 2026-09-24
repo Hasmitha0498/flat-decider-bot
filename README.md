@@ -96,7 +96,7 @@ The code uses `SUPABASE_SERVICE_ROLE_KEY` if it is set and falls back to `SUPABA
 ### 5. Get the Gemini API key
 1. Go to <https://aistudio.google.com/apikey> and click **Create API key**.
 2. Put it in `.env` as `GEMINI_API_KEY=...`.
-3. Optional: `GEMINI_MODEL` (default `gemini-3.8-flash`). Any current Gemini model that supports JSON-schema output works.
+3. Optional: `GEMINI_MODEL` (default `gemini-3.1-flash-lite`). On the **free tier**, `gemini-3.8-flash` and `gemini-3.5-flash` allow only about **20 requests per day each** (quotas reset at midnight Pacific time). Flash-lite has a larger allowance, so it's the default and the Flash models are fallbacks. Check your own limits at <https://aistudio.google.com/rate-limit>.
 
 ### 6. Environment variables
 
@@ -108,8 +108,8 @@ The code uses `SUPABASE_SERVICE_ROLE_KEY` if it is set and falls back to `SUPABA
 | `SUPABASE_ANON_KEY` | yes* | Used if no service role key is set (then run the optional anon SQL) |
 | `SUPABASE_SERVICE_ROLE_KEY` | recommended | Server-only key; bypasses RLS |
 | `TELEGRAM_WEBHOOK_SECRET` | recommended | Random string; Telegram sends it with every webhook call so fake requests are rejected |
-| `GEMINI_MODEL` | no | Override the Gemini model |
-| `GEMINI_FALLBACK_MODELS` | no | Comma-separated models tried in order when the main one is overloaded or rate-limited (default `gemini-3.5-flash,gemini-3.1-flash-lite`) |
+| `GEMINI_MODEL` | no | Main Gemini model (default `gemini-3.1-flash-lite`) |
+| `GEMINI_FALLBACK_MODELS` | no | Comma-separated models tried in order when the main one is overloaded or rate-limited (default `gemini-3.1-flash-lite,gemini-3.8-flash,gemini-3.5-flash`; the main model is skipped if listed) |
 | `DEMO_MODE` | no | `true` enables the `/demo` command |
 | `DEBUG_EXTRACTION` | no | `true` logs (server-side only) each fact that was dropped for lacking a real quote |
 
@@ -230,7 +230,7 @@ Weighting the worst-off person stops one friend from being sacrificed for the ot
 B ranks above A. The formula lives in code (`src/matching/rank.ts`). Gemini only writes the "Main tradeoff" sentences and never sees or changes the scoring.
 
 ### Gemini's three jobs (and nothing else)
-1. **Extract listing facts** into a fixed JSON schema (validated with zod). Up to 5 listings go in one call, because the free Gemini tier allows only about 5 requests per minute. Calls are sent one at a time. Failed calls or invalid output are retried: the main model again (waiting as long as Gemini asks on rate limits), then each fallback model. If all fail, those listings are reported as "not processed, try again later" and nothing is invented. A lighter fallback model may leave more facts unknown, but the evidence check means it can't add wrong ones.
+1. **Extract listing facts** into a fixed JSON schema (validated with zod). Up to 5 listings go in one call, because the free Gemini tier allows only about 5 requests per minute. Calls are sent one at a time. Failed calls or invalid output are retried: the main model again (waiting as long as Gemini asks on rate limits), then each fallback model, for two rounds. Calls use a low thinking level, and each listing's page text is capped at 8,000 characters. Both keep calls to a few seconds, where longer pages had hit Gemini's deadline. If all fail, those listings are reported as "not processed, try again later" and nothing is invented. A lighter fallback model may leave more facts unknown, but the evidence check means it can't add wrong ones.
 2. **Normalise free-text requirements** into yes/no checks.
 3. **Explain** the finished, already-ranked result in plain language. If this fails, a deterministic sentence is used.
 

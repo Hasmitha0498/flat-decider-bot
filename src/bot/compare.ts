@@ -16,7 +16,7 @@ import { editMessage, escapeHtml, sendMessage, type Keyboard } from './telegram'
 const EXTRACTION_VERSION = 3; // bump to force re-extraction after prompt/schema changes
 const FETCH_CONCURRENCY = 4; // reading web pages in parallel is fine
 const BATCH_SIZE = 5; // listings per Gemini call (the free tier allows ~5 calls per minute)
-const BATCH_MAX_CHARS = 40_000;
+const BATCH_MAX_CHARS = 30_000; // keeps each call well within Gemini's deadline, even on the lightest model
 
 export interface UnreadableListing {
   listingId: string;
@@ -159,7 +159,8 @@ export async function runCompare(ctx: Ctx, member: Member): Promise<void> {
   });
 
   await sendMessage(ctx.chatId, `Comparing ${listings.length} ${listings.length === 1 ? 'flat' : 'flats'} against ${members.length} ${members.length === 1 ? "person's" : "people's"} requirements...`);
-  const progressId = await sendMessage(ctx.chatId, `Checking ${listings.length} listings...`);
+  const listingsWord = listings.length === 1 ? 'listing' : 'listings';
+  const progressId = await sendMessage(ctx.chatId, `Checking ${listings.length} ${listingsWord}...`);
 
   // 4-5. Extraction: cached facts are reused; the rest is read, then sent to Gemini in small batches, one call at a time.
   const cache = await repo.getExtractions(listings.map((l) => l.id));
@@ -168,14 +169,14 @@ export async function runCompare(ctx: Ctx, member: Member): Promise<void> {
   const pending = prepared.filter((p): p is PendingExtraction => 'listing' in p);
 
   let done = listings.length - pending.length;
-  if (pending.length) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} listings... ${done} done`);
+  if (pending.length && done > 0) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} ${listingsWord}... ${done} done`);
   for (const batch of toBatches(pending)) {
     const results = await extractBatch(batch, checks);
     batch.forEach((p, i) => (extracted[listings.indexOf(p.listing)] = results[i]));
     done += batch.length;
-    if (done < listings.length) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} listings... ${done} done`);
+    if (done < listings.length) await editMessage(ctx.chatId, progressId, `Checking ${listings.length} ${listingsWord}... ${done} done`);
   }
-  await editMessage(ctx.chatId, progressId, `Checked ${listings.length} listings.`);
+  await editMessage(ctx.chatId, progressId, `Checked ${listings.length} ${listingsWord}.`);
 
   const nameById = new Map(members.map((m) => [m.id, m.display_name]));
   const inputs: ListingInput[] = [];
