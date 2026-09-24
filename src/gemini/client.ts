@@ -2,7 +2,7 @@
 // schema-validated JSON. We never parse free-form prose from the model.
 import { GoogleGenAI } from '@google/genai';
 import type { z } from 'zod';
-import { geminiModel, requireEnv } from '../config';
+import { geminiFallbackModel, geminiModel, requireEnv } from '../config';
 
 let ai: GoogleGenAI | null = null;
 
@@ -20,13 +20,24 @@ interface JsonRequest<T> {
   validator: z.ZodType<T>; // checked again on our side before anything is stored
 }
 
-/** Calls Gemini once, retries once on API errors or invalid output, then gives up with GeminiError. */
+// Attempt plan: main model, main model again after a pause, then the fallback model.
+// Pauses help with Gemini's short "high demand" (503) / rate-limit (429) spikes.
+const ATTEMPTS = [
+  { delayMs: 0, fallback: false },
+  { delayMs: 2000, fallback: false },
+  { delayMs: 4000, fallback: true },
+];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Calls Gemini, retrying on API errors or invalid output (see ATTEMPTS), then gives up with GeminiError. */
 export async function generateJson<T>(request: JsonRequest<T>): Promise<T> {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (const attempt of ATTEMPTS) {
+    if (attempt.delayMs) await sleep(attempt.delayMs);
     try {
       const response = await client().models.generateContent({
-        model: geminiModel(),
+        model: attempt.fallback ? geminiFallbackModel() : geminiModel(),
         contents: request.prompt,
         config: {
           systemInstruction: request.system,

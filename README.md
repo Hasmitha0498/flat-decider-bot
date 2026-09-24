@@ -42,7 +42,7 @@ src/
     rank.ts                 Hard-rule qualification, preference %, balanced ranking, shortlist
     describe.ts             Human-readable names/values
   gemini/                   All Gemini calls (official @google/genai SDK), JSON-schema output only
-    client.ts               generateJson(): schema → call → zod-validate → retry once → error
+    client.ts               generateJson(): schema → call → zod-validate → retry with backoff + fallback model → error
     extractListing.ts       Job 1 (+ evidence-backed custom checks) and the anti-hallucination filter
     normalizeRequirement.ts Job 2: free text → yes/no check
     explainTradeoffs.ts     Job 3: explains the finished result (template fallback if Gemini fails)
@@ -103,6 +103,7 @@ The code uses `SUPABASE_SERVICE_ROLE_KEY` if it is set and falls back to `SUPABA
 | `SUPABASE_SERVICE_ROLE_KEY` | recommended | Server-only key; bypasses RLS |
 | `TELEGRAM_WEBHOOK_SECRET` | recommended | Random string; Telegram sends it with every webhook call so fake requests are rejected |
 | `GEMINI_MODEL` | no | Override the Gemini model |
+| `GEMINI_FALLBACK_MODEL` | no | Model for the last retry when the main one is overloaded (default `gemini-3.5-flash`) |
 | `DEMO_MODE` | no | `true` enables the `/demo` command |
 
 \* Either the anon key or the service role key must be set.
@@ -219,7 +220,7 @@ Weighting the worst-off person stops one friend from being sacrificed for the ot
 B ranks above A. The formula lives in code (`src/matching/rank.ts`). Gemini only writes the "Main tradeoff" sentences and never sees or changes the scoring.
 
 ### Gemini's three jobs (and nothing else)
-1. **Extract listing facts** into a fixed JSON schema (validated with zod; retried once; otherwise the listing is marked failed).
+1. **Extract listing facts** into a fixed JSON schema (validated with zod). Failed calls or invalid output are retried: once more after 2 s, then once on the fallback model after 4 s. If all fail, the listing is marked failed and nothing is invented.
 2. **Normalise free-text requirements** into yes/no checks.
 3. **Explain** the finished, already-ranked result in plain language. If this fails, a deterministic sentence is used.
 

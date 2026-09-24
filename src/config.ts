@@ -17,4 +17,5 @@ export function requireEnv(name: string): string {
 
 export const isGeminiConfigured = () => Boolean(env('GEMINI_API_KEY'));
 export const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-3.8-flash';
+export const geminiFallbackModel = () => env('GEMINI_FALLBACK_MODEL') ?? 'gemini-3.5-flash';
 export const isDemoMode = () => env('DEMO_MODE') === 'true';
