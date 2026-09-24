@@ -21,8 +21,8 @@ vi.mock('../src/gemini/client', async (importOriginal) => {
   };
 });
 
-const { extractListingFacts } = await import('../src/gemini/extractListing');
-const { suggestedRetryMs } = await import('../src/gemini/client');
+import { extractListingFacts } from '../src/gemini/extractListing';
+import { suggestedRetryMs } from '../src/gemini/client';
 
 describe('batched extraction', () => {
   it('checks each listing against its OWN text and treats missing answers as unreadable', async () => {

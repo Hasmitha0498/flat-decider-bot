@@ -1,5 +1,13 @@
 {
   "functions": {
-    "api/telegram.ts": { "maxDuration": 300 }
-  }
+    "api/telegram.ts": {
+      "maxDuration": 300
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/api/telegram"
+    }
+  ]
 }

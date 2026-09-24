@@ -107,7 +107,7 @@ vi.mock('../src/db/repo', () => ({
   getLatestComparisonRun: async (groupId: string) => [...store.runs].reverse().find((r) => r.group_id === groupId) ?? null,
 }));
 
-const { handleUpdate } = await import('../src/bot/handleUpdate');
+import { handleUpdate } from '../src/bot/handleUpdate';
 
 // ---------- helpers ----------
 let updateId = 0;
