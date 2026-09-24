@@ -1,0 +1,31 @@
+{
+  "name": "flat-decider-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that helps a group of flatmates agree on a shared apartment",
+  "scripts": {
+    "dev": "tsx --env-file=.env scripts/poll.ts",
+    "test": "vitest run",
+    "typecheck": "tsc",
+    "set-webhook": "tsx --env-file=.env scripts/set-webhook.ts",
+    "demo:seed": "tsx --env-file=.env scripts/seed-demo.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/genai": "^2.24.0",
+    "@supabase/supabase-js": "^2.117.1",
+    "@vercel/functions": "^3.9.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}
