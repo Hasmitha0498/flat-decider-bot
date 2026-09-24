@@ -4,6 +4,7 @@ import * as repo from '../db/repo';
 import { DatabaseError } from '../db/supabase';
 import { startDemo } from '../demo/demoCommand';
 import { runCompare } from './compare';
+import type { Member } from '../types';
 import type { Ctx } from './context';
 import { formatProfile } from './format';
 import * as group from './groupCommands';
@@ -27,8 +28,15 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   }
 }
 
+/** Identity comes from the stable Telegram user id. A changed @username is refreshed, never a new member. */
 async function buildCtx(chatId: number, user: TelegramUser): Promise<Ctx> {
-  return { chatId, user, member: await repo.getMemberByTelegramId(user.id) };
+  const member = await repo.getMemberByTelegramId(user.id);
+  const username = user.username ?? null;
+  if (member && member.telegram_username !== username) {
+    await repo.setTelegramUsername(member.id, username);
+    member.telegram_username = username;
+  }
+  return { chatId, user, member };
 }
 
 async function requireMember(ctx: Ctx): Promise<boolean> {
@@ -81,12 +89,8 @@ async function handleCommand(ctx: Ctx, command: string, args: string): Promise<v
       return void (await sendMessage(ctx.chatId, 'OK, stopped. ' + (member.preferences_complete ? '' : 'Your preferences are not confirmed yet - send /preferences to review them.')));
     case 'status':
       return group.showStatus(ctx, member);
-    case 'preferences': {
-      const prefs = await repo.getPreferences(member.id);
-      if (prefs.length === 0) return onboarding.startQuestionnaire(ctx, member);
-      if (!member.preferences_complete) return onboarding.resumeQuestionnaire(ctx, member);
-      return void (await sendMessage(ctx.chatId, `${formatProfile(prefs)}\n\nChange something with /edit`));
-    }
+    case 'preferences':
+      return showPreferences(ctx, member);
     case 'edit':
       return onboarding.showEditMenu(ctx);
     case 'add':
@@ -100,10 +104,18 @@ async function handleCommand(ctx: Ctx, command: string, args: string): Promise<v
     case 'details':
       return group.showDetailsMenu(ctx, member);
     case 'leave':
+    case 'leavegroup':
       return group.confirmLeave(ctx);
     default:
       await sendMessage(ctx.chatId, `I don't know that command.\n\n${group.HELP}`);
   }
+}
+
+async function showPreferences(ctx: Ctx, member: Member): Promise<void> {
+  const prefs = await repo.getPreferences(member.id);
+  if (prefs.length === 0) return onboarding.startQuestionnaire(ctx, member);
+  if (!member.preferences_complete) return onboarding.resumeQuestionnaire(ctx, member);
+  await sendMessage(ctx.chatId, formatProfile(prefs), [[{ text: '✏️ Edit preferences', data: 'menu:edit' }]]);
 }
 
 async function handleFreeText(ctx: Ctx, text: string): Promise<void> {
@@ -128,15 +140,21 @@ async function handleCallback(query: NonNullable<TelegramUpdate['callback_query'
   let notice: string | undefined;
 
   try {
-    if (action === 'menu') {
-      if (first === 'create') await group.createGroup(ctx);
-      else await group.explainJoin(ctx);
-      return;
-    }
+    if (action === 'menu' && first === 'create') return await group.createGroup(ctx);
+    if (action === 'menu' && first === 'join') return await group.explainJoin(ctx);
     if (!(await requireMember(ctx))) return;
     const member = ctx.member!;
 
     switch (action) {
+      case 'menu': // buttons on the welcome-back message
+        if (first === 'prefs') await showPreferences(ctx, member);
+        else if (first === 'edit') await onboarding.showEditMenu(ctx);
+        else if (first === 'add') await listings.askForUrl(ctx, member);
+        else if (first === 'listings') await listings.showMyListings(ctx, member);
+        else if (first === 'status') await group.showStatus(ctx, member);
+        else if (first === 'compare') await runCompare(ctx, member);
+        else notice = 'That button has expired.';
+        break;
       case 'ans':
       case 'sec':
       case 'imp':

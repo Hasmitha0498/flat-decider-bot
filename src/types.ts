@@ -59,6 +59,7 @@ export interface Member {
   display_name: string;
   preferences_complete: boolean;
   state: ChatState | null;
+  left_at: string | null; // set when the member leaves; their data is kept for a possible rejoin
 }
 
 export interface Group {

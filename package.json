@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx --env-file=.env scripts/poll.ts",
     "test": "vitest run",
-    "typecheck": "tsc",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tests/tsconfig.json",
     "set-webhook": "tsx --env-file=.env scripts/set-webhook.ts",
     "demo:seed": "tsx --env-file=.env scripts/seed-demo.ts"
   },
@@ -19,6 +19,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^26.6.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",

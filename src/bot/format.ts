@@ -42,13 +42,14 @@ export interface MemberStatus {
   name: string;
   complete: boolean;
   listingCount: number;
+  isCreator?: boolean;
 }
 
 export function formatStatus(groupName: string, joinCode: string, members: MemberStatus[], uniqueListings: number): string {
   const lines = [`<b>HOUSE SEARCH STATUS</b>\n${esc(groupName)} · join code <code>${joinCode}</code>`];
   for (const m of members) {
     const prefs = m.complete ? '✅ Preferences complete' : '⏳ Preferences not finished';
-    lines.push(`<b>${esc(m.name)}</b>\n${prefs}\n${m.listingCount} ${m.listingCount === 1 ? 'flat' : 'flats'} added`);
+    lines.push(`<b>${esc(m.name)}</b>${m.isCreator ? ' (started this search)' : ''}\n${prefs}\n${m.listingCount} ${m.listingCount === 1 ? 'flat' : 'flats'} added`);
   }
   const waiting = members.filter((m) => !m.complete).map((m) => esc(m.name));
   if (waiting.length) lines.push(`Waiting for ${joinNames(waiting)} to finish preferences.`);

@@ -1,0 +1,11 @@
+{
+  "//": "Type-checks the tests. Separate from the root tsconfig, which Vercel uses to compile api/.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler"
+  },
+  "include": [
+    "**/*.ts"
+  ]
+}

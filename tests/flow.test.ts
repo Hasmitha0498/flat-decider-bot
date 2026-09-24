@@ -51,63 +51,11 @@ vi.mock('../src/listings/fetchPage', () => ({
   fetchListingText: vi.fn(async () => ({ ok: false, reason: 'the site requires a login or blocks automated access' })),
 }));
 
-// ---------- in-memory database ----------
-const store = { groups: [] as any[], members: [] as any[], prefs: [] as any[], listings: [] as any[], extractions: [] as any[], runs: [] as any[] };
-let nextId = 1;
-const id = () => `id${nextId++}`;
-
-vi.mock('../src/db/repo', () => ({
-  createGroup: async (name: string, createdBy: number | null, isDemo = false) => {
-    const g = { id: id(), name, join_code: `CODE${nextId}`, created_by: createdBy, status: 'active', is_demo: isDemo, created_at: '' };
-    store.groups.push(g);
-    return g;
-  },
-  getGroupByCode: async (code: string) => store.groups.find((g) => g.join_code === code.toUpperCase()) ?? null,
-  getGroup: async (groupId: string) => store.groups.find((g) => g.id === groupId),
-  deleteGroup: async (groupId: string) => {
-    store.groups = store.groups.filter((g) => g.id !== groupId);
-    store.members = store.members.filter((m) => m.group_id !== groupId);
-  },
-  getMemberByTelegramId: async (tg: number) => structuredClone(store.members.find((m) => m.telegram_user_id === tg) ?? null),
-  getMember: async (memberId: string) => store.members.find((m) => m.id === memberId),
-  addMember: async (input: any) => {
-    const m = { id: id(), group_id: input.groupId, telegram_user_id: input.telegramUserId, telegram_username: input.username, display_name: input.displayName, preferences_complete: false, state: null };
-    store.members.push(m);
-    return structuredClone(m);
-  },
-  getMembers: async (groupId: string) => store.members.filter((m) => m.group_id === groupId),
-  setMemberState: async (memberId: string, state: unknown) => void (store.members.find((m) => m.id === memberId).state = structuredClone(state)),
-  setPreferencesComplete: async (memberId: string, v: boolean) => void (store.members.find((m) => m.id === memberId).preferences_complete = v),
-  deleteMember: async (memberId: string) => void (store.members = store.members.filter((m) => m.id !== memberId)),
-  savePreference: async (memberId: string, pref: any) => {
-    store.prefs = store.prefs.filter((p) => !(p.member_id === memberId && p.criterion === pref.criterion));
-    store.prefs.push({ member_id: memberId, ...structuredClone(pref) });
-  },
-  getPreferences: async (memberId: string) => store.prefs.filter((p) => p.member_id === memberId).map(({ member_id, ...p }) => p),
-  getPreferencesForMembers: async (ids: string[]) => new Map(ids.map((mid) => [mid, store.prefs.filter((p) => p.member_id === mid).map(({ member_id, ...p }) => p)])),
-  findListingByNormalizedUrl: async (groupId: string, url: string) => store.listings.find((l) => l.group_id === groupId && l.normalized_url === url) ?? null,
-  addListing: async (input: any) => {
-    const l = { id: id(), group_id: input.groupId, submitted_by: input.memberId, url: input.url, normalized_url: input.normalizedUrl, manual_text: input.manualText ?? null, status: 'pending', status_detail: null, created_at: '' };
-    store.listings.push(l);
-    return l;
-  },
-  getListings: async (groupId: string) => store.listings.filter((l) => l.group_id === groupId),
-  getListing: async (listingId: string) => store.listings.find((l) => l.id === listingId) ?? null,
-  deleteListing: async () => true,
-  setListingManualText: async (listingId: string, text: string) => Object.assign(store.listings.find((l) => l.id === listingId), { manual_text: text, status: 'pending' }),
-  setListingStatus: async (listingId: string, status: string, detail: string | null) => Object.assign(store.listings.find((l) => l.id === listingId), { status, status_detail: detail }),
-  getExtractions: async () => new Map(store.extractions.map((e) => [e.listing_id, e])),
-  saveExtraction: async (e: any) => void store.extractions.push(e),
-  saveComparisonRun: async (groupId: string, _m: string, results: unknown) => {
-    const r = { id: id(), group_id: groupId, results: structuredClone(results) };
-    store.runs.push(r);
-    return r.id;
-  },
-  getComparisonRun: async (runId: string) => store.runs.find((r) => r.id === runId) ?? null,
-  getLatestComparisonRun: async (groupId: string) => [...store.runs].reverse().find((r) => r.group_id === groupId) ?? null,
-}));
+// ---------- in-memory database (same uniqueness rules as Supabase) ----------
+vi.mock('../src/db/repo', async () => (await import('./helpers/memoryRepo')).repo);
 
 import { handleUpdate } from '../src/bot/handleUpdate';
+import { store } from './helpers/memoryRepo';
 
 // ---------- helpers ----------
 let updateId = 0;

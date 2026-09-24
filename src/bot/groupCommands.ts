@@ -5,8 +5,8 @@ import type { Member } from '../types';
 import type { StoredRun } from './compare';
 import { displayName, type Ctx } from './context';
 import { formatDetails, formatStatus, listingHeadline } from './format';
-import { startQuestionnaire } from './onboarding';
-import { escapeHtml, sendMessage, splitMessage } from './telegram';
+import { resumeQuestionnaire, startQuestionnaire } from './onboarding';
+import { escapeHtml, sendMessage, splitMessage, type Keyboard } from './telegram';
 
 export const INTRO = [
   '🏠 <b>Find the flats your group can actually agree on.</b>',
@@ -24,33 +24,55 @@ export const HELP = [
   '/compare - compare all flats against everyone\'s requirements',
   '/details - full comparison for the last result',
   '/cancel - stop what you are typing',
-  '/leave - leave this house search',
+  '/leave - leave this house search (your answers are kept)',
 ].join('\n');
 
 export async function handleStart(ctx: Ctx): Promise<void> {
-  if (ctx.member) {
-    const group = await repo.getGroup(ctx.member.group_id);
-    await sendMessage(ctx.chatId, `${INTRO}\n\nYou're in <b>${escapeHtml(group.name)}</b> (join code <code>${group.join_code}</code>).\n\n${HELP}`);
-    return;
-  }
+  if (ctx.member) return greetReturningMember(ctx, ctx.member);
   await sendMessage(ctx.chatId, INTRO, [
     [{ text: '➕ Create a house search', data: 'menu:create' }],
     [{ text: '🔑 Join a house search', data: 'menu:join' }],
   ]);
 }
 
-async function alreadyInGroup(ctx: Ctx): Promise<boolean> {
+/**
+ * Shown whenever an existing member comes back (/start, re-entering the join code, tapping Create/Join).
+ * A finished profile is never restarted; a partial one resumes at the first unanswered question.
+ */
+export async function greetReturningMember(ctx: Ctx, member: Member, note?: string): Promise<void> {
+  const [group, members, listings] = await Promise.all([repo.getGroup(member.group_id), repo.getMembers(member.group_id), repo.getListings(member.group_id)]);
+  const intro = `Welcome back, ${escapeHtml(member.display_name)} 👋\n\nYou're already part of <b>${escapeHtml(group.name)}</b> (join code <code>${group.join_code}</code>).${note ? `\n\n${note}` : ''}`;
+
+  if (!member.preferences_complete) {
+    await sendMessage(ctx.chatId, intro);
+    await resumeQuestionnaire({ ...ctx, member }, member);
+    return;
+  }
+
+  const mine = listings.filter((l) => l.submitted_by === member.id).length;
+  const everyoneReady = members.every((m) => m.preferences_complete) && listings.length > 0;
+  const keyboard: Keyboard = [
+    [{ text: '👀 View preferences', data: 'menu:prefs' }, { text: '✏️ Edit preferences', data: 'menu:edit' }],
+    [{ text: '➕ Add apartment', data: 'menu:add' }, ...(mine > 0 ? [{ text: '📋 View listings', data: 'menu:listings' }] : [])],
+    [{ text: '👥 Group status', data: 'menu:status' }, ...(everyoneReady ? [{ text: '🏠 Compare apartments', data: 'menu:compare' }] : [])],
+  ];
+  await sendMessage(ctx.chatId, `${intro}\n\nYour flat preferences are saved.`, keyboard);
+}
+
+/** Returns true (and replies) if the user is already active in a house search. */
+async function alreadyInGroup(ctx: Ctx, note?: string): Promise<boolean> {
   if (!ctx.member) return false;
-  const group = await repo.getGroup(ctx.member.group_id);
-  await sendMessage(ctx.chatId, `You're already in <b>${escapeHtml(group.name)}</b> (code <code>${group.join_code}</code>). Send /leave first if you want to start or join a different one.`);
+  await greetReturningMember(ctx, ctx.member, note);
   return true;
 }
 
+const SWITCH_NOTE = 'To start or join a different house search, send /leave first. Your answers here are kept if you ever come back.';
+
 export async function createGroup(ctx: Ctx, name?: string): Promise<void> {
-  if (await alreadyInGroup(ctx)) return;
+  if (await alreadyInGroup(ctx, SWITCH_NOTE)) return;
   const groupName = (name?.trim() || `${displayName(ctx.user)}'s house search`).slice(0, 60);
   const group = await repo.createGroup(groupName, ctx.user.id);
-  const member = await repo.addMember({ groupId: group.id, telegramUserId: ctx.user.id, username: ctx.user.username ?? null, displayName: displayName(ctx.user) });
+  const { member } = await repo.ensureMembership({ groupId: group.id, telegramUserId: ctx.user.id, username: ctx.user.username ?? null, displayName: displayName(ctx.user) });
   await sendMessage(
     ctx.chatId,
     `✅ Created <b>${escapeHtml(group.name)}</b>.\n\nYour join code is:\n<code>${group.join_code}</code>\n\nSend this to your friends - they join with:\n<code>/join ${group.join_code}</code>`,
@@ -59,27 +81,40 @@ export async function createGroup(ctx: Ctx, name?: string): Promise<void> {
 }
 
 export async function explainJoin(ctx: Ctx): Promise<void> {
-  if (await alreadyInGroup(ctx)) return;
+  if (await alreadyInGroup(ctx, SWITCH_NOTE)) return;
   await sendMessage(ctx.chatId, 'Ask the friend who created the house search for the join code, then send:\n<code>/join CODE</code>');
 }
 
 export async function joinGroup(ctx: Ctx, code: string | undefined): Promise<void> {
-  if (await alreadyInGroup(ctx)) return;
   if (!code) {
     await explainJoin(ctx);
     return;
   }
   const group = await repo.getGroupByCode(code.trim());
   if (!group || group.status !== 'active') {
+    if (await alreadyInGroup(ctx)) return;
     await sendMessage(ctx.chatId, `❌ I couldn't find a house search with the code <code>${escapeHtml(code.trim().toUpperCase())}</code>. Check the code and try again.`);
     return;
   }
+
+  // Re-entering the code of the search you're already in is not a request to start over.
+  if (ctx.member) {
+    await greetReturningMember(ctx, ctx.member, ctx.member.group_id === group.id ? undefined : SWITCH_NOTE);
+    return;
+  }
+
+  const existing = await repo.findMembership(group.id, ctx.user.id);
   const members = await repo.getMembers(group.id);
-  if (members.length >= MAX_MEMBERS) {
+  if (!existing && members.length >= MAX_MEMBERS) {
     await sendMessage(ctx.chatId, `This house search already has ${members.length} people, which is the maximum.`);
     return;
   }
-  const member = await repo.addMember({ groupId: group.id, telegramUserId: ctx.user.id, username: ctx.user.username ?? null, displayName: displayName(ctx.user) });
+
+  const { member, outcome } = await repo.ensureMembership({ groupId: group.id, telegramUserId: ctx.user.id, username: ctx.user.username ?? null, displayName: displayName(ctx.user) });
+  if (outcome !== 'created') {
+    await greetReturningMember({ ...ctx, member }, member);
+    return;
+  }
   const others = members.map((m) => escapeHtml(m.display_name)).join(', ');
   await sendMessage(ctx.chatId, `✅ You joined <b>${escapeHtml(group.name)}</b>${others ? ` with ${others}` : ''}.`);
   await startQuestionnaire({ ...ctx, member }, member);
@@ -91,21 +126,23 @@ export async function showStatus(ctx: Ctx, member: Member): Promise<void> {
     name: m.display_name,
     complete: m.preferences_complete,
     listingCount: listings.filter((l) => l.submitted_by === m.id).length,
+    isCreator: m.telegram_user_id !== null && m.telegram_user_id === group.created_by,
   }));
   await sendMessage(ctx.chatId, formatStatus(group.name, group.join_code, statuses, listings.length));
 }
 
 export async function confirmLeave(ctx: Ctx): Promise<void> {
-  await sendMessage(ctx.chatId, 'Leave this house search? Your preferences and the flats you added will be deleted.', [
-    [{ text: 'Yes, leave', data: 'leave:yes' }],
-    [{ text: 'Cancel', data: 'leave:no' }],
-  ]);
+  await sendMessage(
+    ctx.chatId,
+    "Are you sure you want to leave this house search?\n\nYou'll no longer be included in the group's status or comparisons, and the flats you added will be hidden. Your answers are kept, so rejoining later with the same code restores everything.",
+    [[{ text: 'Yes, leave', data: 'leave:yes' }], [{ text: 'Cancel', data: 'leave:no' }]],
+  );
 }
 
 export async function leaveGroup(ctx: Ctx, member: Member): Promise<void> {
   const group = await repo.getGroup(member.group_id);
   if (group.is_demo) await repo.deleteGroup(group.id); // demo groups are throwaway: remove everything
-  else await repo.deleteMember(member.id);
+  else await repo.markMemberLeft(member.id);
   await sendMessage(ctx.chatId, 'You left the house search. Send /start to create or join another.');
 }
 

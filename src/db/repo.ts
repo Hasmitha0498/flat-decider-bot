@@ -46,8 +46,56 @@ export async function deleteGroup(groupId: string): Promise<void> {
 
 // ---------- members ----------
 
+/** The house search this Telegram user is currently active in (at most one, enforced by the database). */
 export async function getMemberByTelegramId(telegramUserId: number): Promise<Member | null> {
-  return check('load your profile', await db().from('members').select().eq('telegram_user_id', telegramUserId).maybeSingle());
+  return check(
+    'load your profile',
+    await db().from('members').select().eq('telegram_user_id', telegramUserId).is('left_at', null).maybeSingle(),
+  );
+}
+
+/** The membership row for this person in this house search, including one they have left. */
+export async function findMembership(groupId: string, telegramUserId: number): Promise<Member | null> {
+  return check(
+    'look up your membership',
+    await db().from('members').select().eq('group_id', groupId).eq('telegram_user_id', telegramUserId).maybeSingle(),
+  );
+}
+
+export type MembershipResult = { member: Member; outcome: 'created' | 'existing' | 'rejoined' };
+
+/**
+ * Identity is (group_id, telegram_user_id). Query first and reuse the existing row, so preferences,
+ * listings and preferences_complete are never overwritten. Only the Telegram username is refreshed.
+ * Callers must first make sure the user is not active in a DIFFERENT house search.
+ */
+export async function ensureMembership(input: { groupId: string; telegramUserId: number; username: string | null; displayName: string }): Promise<MembershipResult> {
+  const existing = await findMembership(input.groupId, input.telegramUserId);
+  if (existing) {
+    const rejoining = existing.left_at !== null;
+    if (rejoining || existing.telegram_username !== input.username) {
+      const result = await db()
+        .from('members')
+        .update({ left_at: null, telegram_username: input.username, ...(rejoining ? { state: null } : {}) })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      return { member: check('restore your membership', result), outcome: rejoining ? 'rejoined' : 'existing' };
+    }
+    return { member: existing, outcome: 'existing' };
+  }
+
+  try {
+    const member = await addMember(input);
+    return { member, outcome: 'created' };
+  } catch (error) {
+    // Two requests raced (e.g. a double tap): the database's unique rule kept one row - use it.
+    if (error instanceof DatabaseError && error.code === '23505') {
+      const winner = await findMembership(input.groupId, input.telegramUserId);
+      if (winner) return { member: winner, outcome: 'existing' };
+    }
+    throw error;
+  }
 }
 
 export async function getMember(memberId: string): Promise<Member> {
@@ -73,8 +121,9 @@ export async function addMember(input: {
   return check('add you to the group', result);
 }
 
+/** Active members only - people who left are not part of status or comparisons. */
 export async function getMembers(groupId: string): Promise<Member[]> {
-  return check('load group members', await db().from('members').select().eq('group_id', groupId).order('created_at'));
+  return check('load group members', await db().from('members').select().eq('group_id', groupId).is('left_at', null).order('created_at'));
 }
 
 export async function setMemberState(memberId: string, state: ChatState | null): Promise<void> {
@@ -85,8 +134,13 @@ export async function setPreferencesComplete(memberId: string, complete: boolean
   check('update your profile', await db().from('members').update({ preferences_complete: complete }).eq('id', memberId));
 }
 
-export async function deleteMember(memberId: string): Promise<void> {
-  check('remove you from the group', await db().from('members').delete().eq('id', memberId));
+/** Leaving keeps the member's preferences and listings, so rejoining the same search restores them. */
+export async function markMemberLeft(memberId: string): Promise<void> {
+  check('remove you from the group', await db().from('members').update({ left_at: new Date().toISOString(), state: null }).eq('id', memberId));
+}
+
+export async function setTelegramUsername(memberId: string, username: string | null): Promise<void> {
+  check('update your profile', await db().from('members').update({ telegram_username: username }).eq('id', memberId));
 }
 
 // ---------- preferences ----------
@@ -135,8 +189,13 @@ export async function addListing(input: { groupId: string; memberId: string; url
   return check('save the listing', result);
 }
 
+/** Listings added by active members. A member who leaves takes their flats with them until they rejoin. */
 export async function getListings(groupId: string): Promise<Listing[]> {
-  return check('load listings', await db().from('listings').select().eq('group_id', groupId).order('created_at'));
+  const rows: (Listing & { submitter?: unknown })[] = check(
+    'load listings',
+    await db().from('listings').select('*, submitter:members!inner(left_at)').eq('group_id', groupId).is('submitter.left_at', null).order('created_at'),
+  );
+  return rows.map(({ submitter, ...listing }) => listing);
 }
 
 export async function getListing(listingId: string): Promise<Listing | null> {

@@ -77,8 +77,12 @@ Put the token in `.env` as `TELEGRAM_BOT_TOKEN=...`. `.env` is git-ignored and m
    - **anon public** key → `SUPABASE_ANON_KEY`
    - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` (recommended, see below)
 
-### 4. Run the SQL migration
-In Supabase open **SQL Editor → New query**, paste the contents of [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) and click **Run**.
+### 4. Run the SQL migrations
+In Supabase open **SQL Editor → New query**, and run these files in order, pasting each one and clicking **Run**:
+1. [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql)
+2. [`supabase/migrations/002_persistent_membership.sql`](supabase/migrations/002_persistent_membership.sql)
+
+Both are safe to run again.
 
 #### Supabase keys
 The migration turns on Row Level Security with no policies, so only the **service role key** can access the tables. That is the recommended setup: the key lives only in server environment variables, and this app has no browser frontend.
@@ -148,7 +152,7 @@ This registers the webhook (with `TELEGRAM_WEBHOOK_SECRET` if set) and the comma
 | `/compare` | Compare all flats → top 3 with tradeoffs |
 | `/details` | Full criterion-by-criterion comparison for the last result |
 | `/cancel` | Stop the current input |
-| `/leave` | Leave the house search (deletes your data) |
+| `/leave` | Leave the house search, after confirming. Your answers and flats are kept, and rejoining with the same code restores them. |
 
 ## Matching logic
 
@@ -239,7 +243,10 @@ Extractions are cached in `listing_extractions` and redone only when the listing
 Finding a flat together is a **temporary, one-time workflow**. Once the group signs a lease they may never use the tool again. Those systems would cost far more to build and run than they return for a few weeks of use. The users already know how to find listings. The unsolved part is agreeing, and that is all this bot does.
 
 Other simple decisions:
-- One Telegram user belongs to one house search at a time (`/leave` to switch). Up to 6 members per group.
+- **Member identity is `(group_id, telegram_user_id)`**, enforced by a database unique constraint. Usernames and display names are never used to identify someone, and a changed @username is simply updated.
+- **Returning members are recognised, never restarted.** Sending `/start`, re-entering the join code, or tapping an old Create/Join button shows a "Welcome back" menu. A partial profile resumes at the first unanswered question, which is worked out from the answers saved in Supabase, not from chat session state.
+- **Leaving keeps your data.** `/leave` (or `/leavegroup`) asks for confirmation, then marks the membership as left. That person is removed from status and comparisons and their flats are hidden. Rejoining with the same code reactivates the same record, with the same answers, flats and creator status. Demo groups are the exception: leaving one deletes it.
+- A person is active in one house search at a time (`/leave` to switch). Up to 6 members per group.
 - Rent is split equally between all members.
 - No hard per-person listing limit. There is a safety cap of 30 flats per group to keep `/compare` fast (the design target is ~5 per person, ~15 total).
 - Duplicates are detected on a normalised URL (ignores `www.`, tracking parameters, `#fragments` and trailing slashes).
@@ -255,7 +262,7 @@ Demo data lives in `src/demo/` and is never used by production logic.
 - flats chosen to show all three labels: one qualifies, one needs verification (lift not mentioned), and several break a hard rule (no lift, 1 bathroom, over budget, excluded area, no parking, 2BHK)
 - one deliberately unreadable URL, to show the manual-details fallback
 
-Then run `/status`, `/preferences`, `/compare`, `/details`. `/leave` deletes the demo group.
+Then run `/status`, `/preferences`, `/compare`, `/details`. `/leave` deletes the whole demo group.
 
 **Option B: script.** `npm run demo:seed -- <your Telegram user id>` does the same from your machine. You can get your user id from @userinfobot.
 
@@ -270,6 +277,8 @@ npm run typecheck
 
 - `tests/matching.test.ts`: the 7 required scenarios (all hard rules pass; one confirmed hard fail; missing hard-rule info → needs verification; No preference doesn't affect the score; preference % with unknowns; only two qualify → labelled near match; fairness), plus per-criterion rules.
 - `tests/extraction-and-format.test.ts`: hallucinated facts are dropped, custom checks need evidence, prompt fencing, URL normalisation and private-address blocking, message wording.
+- `tests/persistence.test.ts`: returning members (completed, halfway, the creator leaving and rejoining, repeated joins, username changes, preferences only changing through an explicit edit).
+- `tests/database.test.ts`: runs both SQL migrations in an embedded Postgres (PGlite) and checks the uniqueness rules at database level.
 - `tests/flow.test.ts`: a full conversation through the real router (create → join → 16 questions → confirm → edit → add/duplicate → manual details → compare → details), with an in-memory database, fake Telegram and fake Gemini.
 
 ## Known limitations

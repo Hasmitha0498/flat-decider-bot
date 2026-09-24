@@ -49,7 +49,9 @@ async function ask(ctx: Ctx, state: QuestionnaireState): Promise<void> {
   }
 }
 
+/** Starts setup at question 1 - but only for someone with no saved answers. Anyone else resumes. */
 export async function startQuestionnaire(ctx: Ctx, member: Member): Promise<void> {
+  if ((await repo.getPreferences(member.id)).length > 0) return resumeQuestionnaire(ctx, member);
   const state: QuestionnaireState = { kind: 'questionnaire', mode: 'setup', index: 0, stage: 'value' };
   await repo.setMemberState(member.id, state);
   await repo.setPreferencesComplete(member.id, false);
@@ -59,12 +61,14 @@ export async function startQuestionnaire(ctx: Ctx, member: Member): Promise<void
 
 /** Continue an interrupted questionnaire at the first unanswered question, or show the summary. */
 export async function resumeQuestionnaire(ctx: Ctx, member: Member): Promise<void> {
+  // The saved answers in the database decide where to continue - not the chat session.
   const answered = new Set((await repo.getPreferences(member.id)).map((p) => p.criterion));
   const index = QUESTIONS.findIndex((q) => !answered.has(q.criterion));
   if (index === -1) return showProfileForConfirmation(ctx, member);
   const state: QuestionnaireState = { kind: 'questionnaire', mode: 'setup', index, stage: 'value' };
   await repo.setMemberState(member.id, state);
-  await sendMessage(ctx.chatId, "Let's finish your flat profile.");
+  const done = QUESTIONS.filter((q) => answered.has(q.criterion)).length;
+  await sendMessage(ctx.chatId, `Let's finish your flat profile. Your ${done} saved ${done === 1 ? 'answer is' : 'answers are'} kept - continuing from question ${index + 1}.`);
   await ask(ctx, state);
 }
 
